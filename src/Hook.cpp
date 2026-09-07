@@ -1,6 +1,7 @@
 #include "SpawnerMod.h"
 
 #include "ll/api/memory/Hook.h"
+#include "ll/api/memory/Symbol.h"
 #include "ll/api/memory/Signature.h"
 #include "ll/api/memory/Memory.h"
 #include "ll/api/io/Logger.h"
@@ -15,16 +16,16 @@
 #include <string>
 #include <regex>
 
-using namespace ll::literals::memory_literals;
-
 namespace SpawnerSetting {
 
 namespace {
 
 void applyDensityMultiplier(Dimension* dim) {
-    auto& config = SpawnerMod::getInstance().getConfig();
-    float multiplier = config.densityMultiplier;
-    auto& logger = SpawnerMod::getInstance().getSelf().getLogger();
+    if (!dim) return;
+
+    auto const& config     = SpawnerMod::getInstance().getConfig();
+    float       multiplier = config.densityMultiplier;
+    auto&       logger     = SpawnerMod::getInstance().getSelf().getLogger();
 
     if (multiplier == 1.0f) return;
 
@@ -37,8 +38,13 @@ void applyDensityMultiplier(Dimension* dim) {
         val *= multiplier;
     }
 
-    logger.info("维度 ID: {} | 密度倍率: {:.1f} | 地表密度上限: {:.1f} -> {:.1f}",
-        (int)dim->getDimensionId(), multiplier, originalVal, dim->mMobsPerChunkSurface[0]);
+    logger.info(
+        "维度 ID: {} | 密度倍率: {:.1f} | 地表密度上限: {:.1f} -> {:.1f}",
+        static_cast<int>(dim->getDimensionId()),
+        multiplier,
+        originalVal,
+        dim->mMobsPerChunkSurface[0]
+    );
 }
 
 LL_AUTO_TYPE_INSTANCE_HOOK(
@@ -61,13 +67,13 @@ LL_AUTO_TYPE_INSTANCE_HOOK(
     bool,
     bool checkSpawnPosition
 ) {
-    const auto& config = SpawnerMod::getInstance().getConfig();
+    auto const& config = SpawnerMod::getInstance().getConfig();
 
     bool isFamilyMatch = false;
-    bool isIdMatch = false;
+    bool isIdMatch     = false;
 
     if (config.enableFamilyFilter) {
-        for (const auto& familyName : config.targetFamilies) {
+        for (auto const& familyName : config.targetFamilies) {
             if (this->hasFamily(HashedString(familyName.c_str()))) {
                 isFamilyMatch = true;
                 break;
@@ -76,8 +82,8 @@ LL_AUTO_TYPE_INSTANCE_HOOK(
     }
 
     if (config.enableIdentifierFilter) {
-        std::string myId = (std::string const&)this->getActorIdentifier().mFullName;
-        for (const auto& targetId : config.targetMonsterIds) {
+        std::string const& myId = (std::string const&)this->getActorIdentifier().mFullName;
+        for (auto const& targetId : config.targetMonsterIds) {
             if (config.useRegex) {
                 try {
                     std::regex pattern(targetId);
@@ -107,52 +113,28 @@ LL_AUTO_TYPE_INSTANCE_HOOK(
     return origin(checkSpawnPosition);
 }
 
-LL_AUTO_STATIC_HOOK(
-    SpawnerTickHook,
+LL_AUTO_TYPE_INSTANCE_HOOK(
+    LevelTickHook,
     ll::memory::HookPriority::Normal,
-    "48 8B C4 4C 89 48 ? 55"_sig,
-    // 1.21.130.4
-    void,
-    ::Spawner* spawner,
-    ::BlockSource& region,
-    ::LevelChunkVolumeData const& volumeData,
-    ::ChunkPos const chunkPos
+    Level,
+    &Level::$tick,
+    void
 ) {
-    auto& config = SpawnerMod::getInstance().getConfig();
+    origin();
+
+    auto& spawnerRef = this->getSpawner();
+    auto* spawner = &spawnerRef;
+    if (!spawner) return;
+
+    auto const& config = SpawnerMod::getInstance().getConfig();
     float multiplier = config.globalCapMultiplier;
-    int speed = config.spawnSpeed;
-    if (speed < 1) speed = 1;
+    if (multiplier <= 0.0f || multiplier == 1.0f) return;
 
-    auto& mobCount = ll::memory::dAccess<unsigned int>(spawner, 552);
-    unsigned int currentRealCount = mobCount;
-
-    for (int i = 0; i < speed; ++i) {
-        if (multiplier <= 0.0f || multiplier == 1.0f) {
-            origin(spawner, region, volumeData, chunkPos);
-            continue;
-        }
-
-        unsigned int fakeCount = static_cast<unsigned int>(currentRealCount / multiplier);
-
-        if (fakeCount >= 200) {
-            if (i == 0) {
-                mobCount = currentRealCount;
-                origin(spawner, region, volumeData, chunkPos);
-                currentRealCount = mobCount;
-            }
-            break;
-        }
-
-        mobCount = fakeCount;
-        origin(spawner, region, volumeData, chunkPos);
-
-        unsigned int newMemCount = mobCount;
-        int delta = (int)newMemCount - (int)fakeCount;
-        currentRealCount += delta;
-        
-        mobCount = currentRealCount;
+    auto& mobCount = ll::memory::dAccess<unsigned int>(spawner, config.mobCountOffset);
+    if (mobCount > 0) {
+        mobCount = static_cast<unsigned int>(static_cast<float>(mobCount) / multiplier);
     }
 }
 
-}
+} // namespace
 } // namespace SpawnerSetting
